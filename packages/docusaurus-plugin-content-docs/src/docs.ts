@@ -59,6 +59,64 @@ export async function readDocFile(
   return {source, content, contentPath, filePath};
 }
 
+function resolveFilePrecedenceConflicts(docFiles: DocFile[]): DocFile[] {
+  const filesByDirectory = new Map<string, DocFile[]>();
+  
+  // Group files by their directory
+  docFiles.forEach(docFile => {
+    const dir = path.dirname(docFile.source);
+    if (!filesByDirectory.has(dir)) {
+      filesByDirectory.set(dir, []);
+    }
+    filesByDirectory.get(dir)!.push(docFile);
+  });
+  
+  const resolvedFiles: DocFile[] = [];
+  const conflictedFiles: DocFile[] = [];
+  
+  filesByDirectory.forEach((files, dir) => {
+    const dirName = path.basename(dir);
+    
+    // Find index files and same-named files
+    const indexFiles = files.filter(file => {
+      const baseName = path.basename(file.source, path.extname(file.source));
+      return baseName.toLowerCase() === 'index';
+    });
+    
+    const sameNamedFiles = files.filter(file => {
+      const baseName = path.basename(file.source, path.extname(file.source));
+      return baseName.toLowerCase() === dirName.toLowerCase() && baseName.toLowerCase() !== 'index';
+    });
+    
+    const otherFiles = files.filter(file => {
+      const baseName = path.basename(file.source, path.extname(file.source));
+      return baseName.toLowerCase() !== 'index' && baseName.toLowerCase() !== dirName.toLowerCase();
+    });
+    
+    // Apply precedence rules: index files take priority over same-named files
+    if (indexFiles.length > 0 && sameNamedFiles.length > 0) {
+      // Index files win, same-named files become conflicted
+      resolvedFiles.push(...indexFiles);
+      conflictedFiles.push(...sameNamedFiles);
+      resolvedFiles.push(...otherFiles);
+    } else {
+      // No conflict, include all files
+      resolvedFiles.push(...files);
+    }
+  });
+  
+  // Log conflicts for debugging
+  if (conflictedFiles.length > 0) {
+    console.warn(
+      `Docusaurus found conflicting files where index files take precedence:\n${conflictedFiles
+        .map(f => `  - ${f.source} (ignored due to index file in same directory)`)
+        .join('\n')}`
+    );
+  }
+  
+  return resolvedFiles;
+}
+
 export async function readVersionDocs(
   versionMetadata: VersionMetadata,
   options: Pick<
@@ -70,9 +128,12 @@ export async function readVersionDocs(
     cwd: versionMetadata.contentPath,
     ignore: options.exclude,
   });
-  return Promise.all(
+  const docFiles = await Promise.all(
     sources.map((source) => readDocFile(versionMetadata, source)),
   );
+  
+  // Resolve precedence conflicts between index files and same-named directory files
+  return resolveFilePrecedenceConflicts(docFiles);
 }
 
 export type DocEnv = 'production' | 'development';
